@@ -955,16 +955,25 @@ class ContinuousCritic(BaseModel):
             normalize_images=normalize_images,
         )
 
-        action_dim = get_action_dim(self.action_space)
+        self.action_dim = get_action_dim(self.action_space)
 
         self.share_features_extractor = share_features_extractor
         self.n_critics = n_critics
         self.q_networks: List[nn.Module] = []
+        self.h_networks: List[nn.Module] = []
+        hidden_size = 64
         for idx in range(n_critics):
-            q_net_list = create_mlp(features_dim + action_dim, 1, net_arch, activation_fn)
+            q_net_list = create_mlp(features_dim + self.action_dim, hidden_size, net_arch, activation_fn)
             q_net = nn.Sequential(*q_net_list)
             self.add_module(f"qf{idx}", q_net)
             self.q_networks.append(q_net)
+            for hidx in range(self.action_dim):
+                net_arch = [hidden_size, hidden_size]
+                q_net_list = create_mlp(hidden_size, 1, net_arch, activation_fn)
+                q_net = nn.Sequential(*q_net_list)
+                self.add_module(f"qf-{idx}-{hidx}", q_net)
+                self.h_networks.append(q_net)
+            
 
     def forward(self, obs: th.Tensor, actions: th.Tensor) -> Tuple[th.Tensor, ...]:
         # Learn the features extractor using the policy loss only
@@ -972,7 +981,17 @@ class ContinuousCritic(BaseModel):
         with th.set_grad_enabled(not self.share_features_extractor):
             features = self.extract_features(obs, self.features_extractor)
         qvalue_input = th.cat([features, actions], dim=1)
-        return tuple(q_net(qvalue_input) for q_net in self.q_networks)
+        final_results = []
+        for idx, q_net in enumerate(self.q_networks):
+            hidden_state = q_net(qvalue_input)
+            single_results = []
+            for h_net in self.h_networks[idx*self.action_dim:(idx+1)*self.action_dim]:
+                output = h_net(hidden_state)
+                single_results.append(output)
+            single_results = th.cat(single_results, dim=1)
+            final_results.append(single_results)
+        
+        return th.stack(final_results, dim=1)
 
     def q1_forward(self, obs: th.Tensor, actions: th.Tensor) -> th.Tensor:
         """

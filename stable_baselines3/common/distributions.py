@@ -173,7 +173,8 @@ class DiagGaussianDistribution(Distribution):
         :return:
         """
         log_prob = self.distribution.log_prob(actions)
-        return sum_independent_dims(log_prob)
+        return log_prob
+        # return sum_independent_dims(log_prob)
 
     def entropy(self) -> Optional[th.Tensor]:
         return sum_independent_dims(self.distribution.entropy())
@@ -236,7 +237,7 @@ class SquashedDiagGaussianDistribution(DiagGaussianDistribution):
         log_prob = super().log_prob(gaussian_actions)
         # Squash correction (from original SAC implementation)
         # this comes from the fact that tanh is bijective and differentiable
-        log_prob -= th.sum(th.log(1 - actions**2 + self.epsilon), dim=1)
+        log_prob -= th.log(1 - actions**2 + self.epsilon)
         return log_prob
 
     def entropy(self) -> Optional[th.Tensor]:

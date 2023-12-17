@@ -220,7 +220,7 @@ class SAC(OffPolicyAlgorithm):
 
             # Action by the current actor for the sampled state
             actions_pi, log_prob = self.actor.action_log_prob(replay_data.observations)
-            log_prob = log_prob.reshape(-1, 1)
+            # log_prob = log_prob.reshape(-1, 1)
 
             ent_coef_loss = None
             if self.ent_coef_optimizer is not None and self.log_ent_coef is not None:
@@ -228,7 +228,7 @@ class SAC(OffPolicyAlgorithm):
                 # so we don't change it with other losses
                 # see https://github.com/rail-berkeley/softlearning/issues/60
                 ent_coef = th.exp(self.log_ent_coef.detach())
-                ent_coef_loss = -(self.log_ent_coef * (log_prob + self.target_entropy).detach()).mean()
+                ent_coef_loss = -(self.log_ent_coef * (log_prob.sum(-1) + self.target_entropy).detach()).mean()
                 ent_coef_losses.append(ent_coef_loss.item())
             else:
                 ent_coef = self.ent_coef_tensor
@@ -246,21 +246,24 @@ class SAC(OffPolicyAlgorithm):
                 # Select action according to policy
                 next_actions, next_log_prob = self.actor.action_log_prob(replay_data.next_observations)
                 # Compute the next Q values: min over all critics targets
-                next_q_values = th.cat(self.critic_target(replay_data.next_observations, next_actions), dim=1)
-                next_q_values, _ = th.min(next_q_values, dim=1, keepdim=True)
+                next_q_values = self.critic_target(replay_data.next_observations, next_actions)
+                next_q_values, _ = th.min(next_q_values, dim=1)
                 # # add entropy term
                 # next_q_values = next_q_values - ent_coef * next_log_prob.reshape(-1, 1)
                 # td error + entropy term
                 target_q_values = replay_data.rewards + (1 - replay_data.dones) * self.gamma * next_q_values
-                target_q_values += ent_coef * log_prob.detach()
-                target_q_values -= ent_coef * (1 - replay_data.dones) * self.gamma * next_log_prob.reshape(-1, 1)
+                target_q_values += ent_coef * log_prob.detach().mean(dim=-1, keepdim=True)
+                target_q_values -= ent_coef * (1 - replay_data.dones) * self.gamma * next_log_prob.mean(dim=-1, keepdim=True)
 
             # Get current Q-values estimates for each critic network
             # using action from the replay buffer
             current_q_values = self.critic(replay_data.observations, replay_data.actions)
 
             # Compute critic loss
-            critic_loss = 0.5 * sum(F.mse_loss(current_q, target_q_values.detach()) for current_q in current_q_values)
+            critic_loss = 0.
+            for critic_idx in range(current_q_values.shape[1]):
+                critic_loss = critic_loss + 0.5 * \
+                    F.mse_loss(current_q_values[:,critic_idx], target_q_values.detach())
             assert isinstance(critic_loss, th.Tensor)  # for type checker
             critic_losses.append(critic_loss.item())  # type: ignore[union-attr]
 
@@ -272,8 +275,8 @@ class SAC(OffPolicyAlgorithm):
             # Compute actor loss
             # Alternative: actor_loss = th.mean(log_prob - qf1_pi)
             # Min over all critic networks
-            q_values_pi = th.cat(self.critic(replay_data.observations, actions_pi), dim=1)
-            min_qf_pi, _ = th.min(q_values_pi, dim=1, keepdim=True)
+            q_values_pi = self.critic(replay_data.observations, actions_pi)
+            min_qf_pi, _ = th.min(q_values_pi, dim=1) #, keepdim=True)
             actor_loss = (ent_coef * log_prob - min_qf_pi).mean()
             actor_losses.append(actor_loss.item())
 
