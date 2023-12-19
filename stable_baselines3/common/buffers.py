@@ -312,14 +312,19 @@ class ReplayBuffer(BaseBuffer):
         else:
             next_obs = self._normalize_obs(self.next_observations[batch_inds, env_indices, :], env)
 
+        next2_obs = self._normalize_obs(self.observations[(batch_inds+1)%self.buffer_size, env_indices, :], env)
+        
         data = (
             self._normalize_obs(self.observations[batch_inds, env_indices, :], env),
             self.actions[batch_inds, env_indices, :],
             next_obs,
-            # Only use dones that are not due to timeouts
-            # deactivated by default (timeouts is initialized as an array of False)
             (self.dones[batch_inds, env_indices] * (1 - self.timeouts[batch_inds, env_indices])).reshape(-1, 1),
             self._normalize_reward(self.rewards[batch_inds, env_indices].reshape(-1, 1), env),
+            next2_obs,
+            self._normalize_reward(self.rewards[(batch_inds+1)%self.buffer_size, env_indices].reshape(-1, 1), env),
+            (self.dones[(batch_inds+1)%self.buffer_size, env_indices] * (1 - self.timeouts[(batch_inds+1)%self.buffer_size, env_indices])).reshape(-1, 1),
+            (batch_inds==self.buffer_size-1).astype("float32").reshape(-1, 1),
+            self.actions[(batch_inds+1)%self.buffer_size, env_indices, :],
         )
         return ReplayBufferSamples(*tuple(map(self.to_torch, data)))
 

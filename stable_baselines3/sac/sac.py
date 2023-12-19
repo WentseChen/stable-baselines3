@@ -91,7 +91,7 @@ class SAC(OffPolicyAlgorithm):
         self,
         policy: Union[str, Type[SACPolicy]],
         env: Union[GymEnv, str],
-        learning_rate: Union[float, Schedule] = 3e-4,
+        learning_rate: Union[float, Schedule] = 1e-3,
         buffer_size: int = 1_000_000,  # 1e6
         learning_starts: int = 100,
         batch_size: int = 256,
@@ -165,7 +165,7 @@ class SAC(OffPolicyAlgorithm):
         # Target entropy is used when learning the entropy coefficient
         if self.target_entropy == "auto":
             # automatically set target entropy if needed
-            self.target_entropy = float(-np.prod(self.env.action_space.shape).astype(np.float32))  # type: ignore
+            self.target_entropy = float(-np.prod(self.env.action_space.shape).astype(np.float32)) + 1. # type: ignore
         else:
             # Force conversion
             # this will also throw an error for unexpected string
@@ -242,23 +242,86 @@ class SAC(OffPolicyAlgorithm):
                 ent_coef_loss.backward()
                 self.ent_coef_optimizer.step()
 
+            td_lambda = 0.2
             with th.no_grad():
                 # Select action according to policy
-                next_actions, next_log_prob = self.actor.action_log_prob(replay_data.next_observations)
-                # Compute the next Q values: min over all critics targets
+                (next_actions, next_log_prob), next_dist = self.actor.action_log_prob(replay_data.next_observations, get_dist=True)
                 next_q_values = th.cat(self.critic_target(replay_data.next_observations, next_actions), dim=1)
                 next_q_values, _ = th.min(next_q_values, dim=1, keepdim=True)
-                # add entropy term
-                next_q_values = next_q_values - ent_coef * next_log_prob.reshape(-1, 1)
-                # td error + entropy term
-                target_q_values = replay_data.rewards + (1 - replay_data.dones) * self.gamma * next_q_values
-
+                
+                # # SAC
+                # target_q_values = replay_data.rewards + (1 - replay_data.dones) * self.gamma \
+                #     * (next_q_values - ent_coef * next_log_prob.reshape(-1, 1))
+                
+                # # SAC w/ TD(lambda)
+                # next2_actions, next2_log_prob = self.actor.action_log_prob(replay_data.next2_observations)
+                # next2_q_values = th.cat(self.critic_target(replay_data.next2_observations, next2_actions), dim=1)
+                # next2_q_values, _ = th.min(next2_q_values, dim=1, keepdim=True)
+                
+                # target_q_values2 = replay_data.rewards + (1 - replay_data.dones) * self.gamma * replay_data.next_rewards
+                # target_q_values2 -= (1 - replay_data.dones) * self.gamma * ent_coef * next_log_prob.reshape(-1, 1)
+                # target_q_values2 += (1 - replay_data.dones) * (1 - replay_data.next_env_dones) \
+                #     * self.gamma**2 * (next2_q_values - ent_coef * next2_log_prob.reshape(-1, 1))
+                # target_q_values = (1 - td_lambda * (1 - replay_data.next_buf_dones)) * target_q_values \
+                #     + td_lambda * (1 - replay_data.next_buf_dones) * target_q_values2
+                    
+                # # SAC w/ TD(lambda) + off-policy correction    
+                # next2_actions, next2_log_prob = self.actor.action_log_prob(replay_data.next2_observations)
+                # next2_q_values = th.cat(self.critic_target(replay_data.next2_observations, next2_actions), dim=1)
+                # next2_q_values, _ = th.min(next2_q_values, dim=1, keepdim=True)
+                
+                # next_q_old_values = th.cat(self.critic_target(replay_data.next_observations, replay_data.next_actions), dim=1)
+                # next_q_old_values, _ = th.min(next_q_old_values, dim=1, keepdim=True)
+                
+                # target_q_values2 = replay_data.rewards + (1 - replay_data.dones) * self.gamma * replay_data.next_rewards
+                # target_q_values2 += (1 - replay_data.dones) * self.gamma * (next_q_values - next_q_old_values) 
+                # target_q_values2 -= (1 - replay_data.dones) * self.gamma * ent_coef * next_log_prob.reshape(-1, 1)
+                # target_q_values2 += (1 - replay_data.dones) * (1 - replay_data.next_env_dones) \
+                #     * self.gamma**2 * (next2_q_values - ent_coef * next2_log_prob.reshape(-1, 1))
+                # target_q_values = (1 - td_lambda * (1 - replay_data.next_buf_dones)) * target_q_values \
+                #     + td_lambda * (1 - replay_data.next_buf_dones) * target_q_values2
+                
+                # mySAC
+                target_q_values = replay_data.rewards + ent_coef * log_prob + \
+                    (1 - replay_data.dones) * self.gamma * (next_q_values - ent_coef * next_log_prob.reshape(-1, 1))
+                    
+                # # mySAC w/ TD(lambda)
+                # next2_actions, next2_log_prob = self.actor.action_log_prob(replay_data.next2_observations)
+                # next2_q_values = th.cat(self.critic_target(replay_data.next2_observations, next2_actions), dim=1)
+                # next2_q_values, _ = th.min(next2_q_values, dim=1, keepdim=True)
+                
+                # target_q_values2 = replay_data.rewards + ent_coef * log_prob + \
+                #     (1 - replay_data.dones) * self.gamma * replay_data.next_rewards
+                # target_q_values2 += (1 - replay_data.dones) * (1 - replay_data.next_env_dones) \
+                #     * self.gamma**2 * (next2_q_values - ent_coef * next2_log_prob.reshape(-1, 1))
+                # target_q_values = (1 - td_lambda * (1 - replay_data.next_buf_dones)) * target_q_values \
+                #     + td_lambda * (1 - replay_data.next_buf_dones) * target_q_values2
+                    
+                # mySAC w/ TD(lambda) + off-policy correction
+                next2_actions, next2_log_prob = self.actor.action_log_prob(replay_data.next2_observations)
+                next2_q_values = th.cat(self.critic_target(replay_data.next2_observations, next2_actions), dim=1)
+                next2_q_values, _ = th.min(next2_q_values, dim=1, keepdim=True)
+                
+                next_old_log_prob = next_dist.log_prob(next_actions)
+                next_q_old_values = th.cat(self.critic_target(replay_data.next_observations, replay_data.next_actions), dim=1)
+                next_q_old_values, _ = th.min(next_q_old_values, dim=1, keepdim=True)
+                
+                target_q_values2 = replay_data.rewards + ent_coef * log_prob + \
+                    (1 - replay_data.dones) * self.gamma * replay_data.next_rewards
+                target_q_values2 += (1 - replay_data.dones) * self.gamma * (next_q_values - ent_coef * next_log_prob.reshape(-1, 1))
+                target_q_values2 -= (1 - replay_data.dones) * self.gamma * (next_q_old_values - ent_coef * next_old_log_prob.reshape(-1, 1))
+                target_q_values2 += (1 - replay_data.dones) * (1 - replay_data.next_env_dones) \
+                    * self.gamma**2 * (next2_q_values - ent_coef * next2_log_prob.reshape(-1, 1))
+                target_q_values = (1 - td_lambda * (1 - replay_data.next_buf_dones)) * target_q_values \
+                    + td_lambda * (1 - replay_data.next_buf_dones) * target_q_values2
+                
+                    
             # Get current Q-values estimates for each critic network
             # using action from the replay buffer
             current_q_values = self.critic(replay_data.observations, replay_data.actions)
 
             # Compute critic loss
-            critic_loss = 0.5 * sum(F.mse_loss(current_q, target_q_values) for current_q in current_q_values)
+            critic_loss = 0.5 * sum(F.mse_loss(current_q, target_q_values.detach()) for current_q in current_q_values)
             assert isinstance(critic_loss, th.Tensor)  # for type checker
             critic_losses.append(critic_loss.item())  # type: ignore[union-attr]
 
